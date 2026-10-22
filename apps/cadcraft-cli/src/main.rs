@@ -85,10 +85,11 @@ image framing (png 2400x1600, svg, pdf; always model space):
   passed unchanged. With no earlier returned handle the run fails and says so.
 
 mcp file access (headless only):
-  --automation-read-root DIR   the only folder the agent's commands may read from
-  --automation-write-root DIR  the only folder they may write to
-                               (give the same folder twice for both; a root left out grants
-                               none of its access; without either, nothing is confined)";
+  --automation-read-root DIR   the only folder the agent's commands may read from (reads are
+                               also allowed under the write root)
+  --automation-write-root DIR  the only folder they may write to, never the folder itself
+                               (give the same folder twice for both; a read root alone allows
+                               no writes; without either, nothing is confined)";
 
 /// What part of model space an image export shows.
 #[derive(Clone, Copy, Debug, PartialEq)]

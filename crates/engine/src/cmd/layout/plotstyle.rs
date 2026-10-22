@@ -335,6 +335,7 @@ fn run_stylesmanager(s: &mut Session, p: &Value) -> Result<Value> {
                     {
                         crate::file_access::check_write(_path).map_err(|e| bad(cmd, e))?;
                         let tmp = format!("{_path}.cadcraft-tmp");
+                        crate::file_access::check_write(&tmp).map_err(|e| bad(cmd, e))?;
                         std::fs::write(&tmp, text.as_bytes()).map_err(|e| bad(cmd, format!("{_path}: {e}")))?;
                         std::fs::rename(&tmp, _path).map_err(|e| bad(cmd, format!("{_path}: {e}")))?;
                         Ok(json!({ "name": name, "path": _path, "bytes": text.len() }))
