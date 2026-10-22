@@ -5,7 +5,8 @@
 //! cadcraft-cli convert IN.dxf OUT.(dxf|svg|png) [--window x0,y0,x1,y1 | --view extents|current]
 //! cadcraft-cli run [FILE|--sample|--metric] [--script TEXT|--script-file F.scr] [--cmd 'id {json}']... [--save OUT] [--export OUT.png] [--window ... | --view ...]
 //! cadcraft-cli commands [FILTER]                   command catalog (JSON)
-//! cadcraft-cli mcp [--connect HOST:PORT [--lazy] [--launch]]  MCP server on stdio (headless or bridged to the app)
+//! cadcraft-cli mcp [--connect HOST:PORT [--lazy] [--launch]] [--automation-read-root DIR] [--automation-write-root DIR]
+//!                                                 MCP server on stdio (headless or bridged to the app)
 //! cadcraft-cli perf [N]                            timing table on a synthetic N-entity drawing
 //! cadcraft-cli perf FILE                           canvas display-list build of a drawing, zoomed in step by step
 //! cadcraft-cli sample (bracket|floorplan) OUT       write a built-in sample drawing
@@ -60,7 +61,7 @@ const USAGE: &str = "usage:
   cadcraft-cli convert IN.dxf OUT.(dxf|dwg|svg|png|pdf) [FRAMING]
   cadcraft-cli run [FILE | --sample | --metric] [--script TEXT] [--script-file F.scr] [--cmd 'id {json}']... [--save OUT.dxf] [--export OUT.(png|svg|pdf)] [FRAMING]
   cadcraft-cli commands [FILTER]
-  cadcraft-cli mcp [--connect HOST:PORT [--lazy] [--launch]]
+  cadcraft-cli mcp [--connect HOST:PORT [--lazy] [--launch]] [--automation-read-root DIR] [--automation-write-root DIR]
   cadcraft-cli perf [N | FILE]
   cadcraft-cli sample (bracket|floorplan) OUT.(dxf|dwg|svg|png)
   cadcraft-cli --version
@@ -81,7 +82,13 @@ image framing (png 2400x1600, svg, pdf; always model space):
     --cmd 'mview {\"p1\":[20,20],\"p2\":[200,150]}'        prints {\"viewports\":[\"100\"]}
     --cmd 'viewport.set {\"handle\":\"{last}\",\"scale\":1}' changes viewport 100
   It works in any parameter, at any depth (e.g. \"handles\":[\"{last}\"]); every other string is
-  passed unchanged. With no earlier returned handle the run fails and says so.";
+  passed unchanged. With no earlier returned handle the run fails and says so.
+
+mcp file access (headless only):
+  --automation-read-root DIR   the only folder the agent's commands may read from
+  --automation-write-root DIR  the only folder they may write to
+                               (give the same folder twice for both; a root left out grants
+                               none of its access; without either, nothing is confined)";
 
 /// What part of model space an image export shows.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -718,8 +725,8 @@ fn perf(args: &[String]) -> Result<(), String> {
 /// The backend `cadcraft-cli mcp` serves from.
 #[derive(Debug, PartialEq, Eq)]
 enum McpTarget {
-    /// An in-process drawing session (no `--connect`).
-    Headless,
+    /// An in-process drawing session (no `--connect`), optionally confined to the two folders.
+    Headless { read_root: Option<String>, write_root: Option<String> },
     /// The running app's control channel at `HOST:PORT`; `lazy`: reached at the first call;
     /// `launch`: opened then if it isn't running.
     Connect { addr: String, lazy: bool, launch: bool },
@@ -727,12 +734,20 @@ enum McpTarget {
 
 /// Parses the arguments after `mcp`. `--connect` must be followed by a `HOST:PORT`; a missing,
 /// empty or flag-like value is an error, never a silent fall back to a headless session (#103).
+/// The automation roots take `--flag DIR` or `--flag=DIR`, once each; a malformed root is an error,
+/// never a silently unconfined server.
 fn parse_mcp_args(args: &[String]) -> Result<McpTarget, String> {
     let mut addr: Option<String> = None;
     let (mut lazy, mut launch) = (false, false);
+    let (mut read_root, mut write_root): (Option<String>, Option<String>) = (None, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        match a.as_str() {
+        // The roots also come as `--flag=DIR`, as the other Craft apps take them.
+        let (flag, inline) = match a.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--automation-") => (flag, Some(value.to_string())),
+            _ => (a.as_str(), None),
+        };
+        match flag {
             "--connect" => {
                 let a = it
                     .next()
@@ -746,14 +761,39 @@ fn parse_mcp_args(args: &[String]) -> Result<McpTarget, String> {
             }
             "--lazy" => lazy = true,
             "--launch" => launch = true,
+            "--automation-read-root" | "--automation-write-root" => {
+                let from_inline = inline.is_some();
+                let dir = match inline {
+                    Some(dir) => dir,
+                    None => it.next().cloned().ok_or_else(|| format!("{flag} needs a folder"))?,
+                };
+                if dir.trim().is_empty() {
+                    return Err(format!("{flag} needs a non-empty folder"));
+                }
+                if !from_inline && dir.starts_with('-') {
+                    return Err(format!("{flag} needs a folder; use {flag}=<dir> for one starting with '-'"));
+                }
+                let slot = if flag == "--automation-read-root" { &mut read_root } else { &mut write_root };
+                if slot.replace(dir).is_some() {
+                    return Err(format!("{flag} given more than once"));
+                }
+            }
             other => return Err(format!("mcp: unknown argument {other}\n{USAGE}")),
         }
     }
     match addr {
         // `--launch` connects at the first call too (the app opens then).
-        Some(addr) => Ok(McpTarget::Connect { addr, lazy: lazy || launch, launch }),
+        Some(addr) => {
+            if read_root.is_some() || write_root.is_some() {
+                return Err(
+                    "--automation-read-root and --automation-write-root confine the headless MCP server; a running app enforces its own file access (not yet available: see issue #1585)"
+                        .into(),
+                );
+            }
+            Ok(McpTarget::Connect { addr, lazy: lazy || launch, launch })
+        }
         None if lazy || launch => Err("--lazy and --launch need --connect HOST:PORT".into()),
-        None => Ok(McpTarget::Headless),
+        None => Ok(McpTarget::Headless { read_root, write_root }),
     }
 }
 
@@ -764,7 +804,13 @@ fn mcp(args: &[String]) -> Result<(), String> {
             Ok(r) => Box::new(r),
             Err(e) => return Err(format!("cadcraft-cli: cannot connect to {addr}: {e}")),
         },
-        McpTarget::Headless => Box::new(cadcraft_mcp::Headless::default()),
+        McpTarget::Headless { read_root, write_root } => {
+            let roots = cadcraft_engine::file_access::AutomationRoots::new(
+                read_root.as_deref().map(std::path::Path::new),
+                write_root.as_deref().map(std::path::Path::new),
+            )?;
+            Box::new(cadcraft_mcp::Headless::default().with_automation_roots(roots))
+        }
     };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -781,7 +827,44 @@ mod mcp_args_tests {
 
     #[test]
     fn mcp_without_connect_is_headless() {
-        assert_eq!(parse_mcp_args(&args(&[])), Ok(McpTarget::Headless));
+        assert_eq!(parse_mcp_args(&args(&[])), Ok(McpTarget::Headless { read_root: None, write_root: None }));
+    }
+
+    #[test]
+    fn mcp_takes_the_automation_roots_once_each() {
+        let roots =
+            |r: Option<&str>, w: Option<&str>| Ok(McpTarget::Headless { read_root: r.map(str::to_string), write_root: w.map(str::to_string) });
+        assert_eq!(parse_mcp_args(&args(&["--automation-read-root", "/work"])), roots(Some("/work"), None));
+        assert_eq!(
+            parse_mcp_args(&args(&["--automation-read-root=/work", "--automation-write-root", "/work/out"])),
+            roots(Some("/work"), Some("/work/out"))
+        );
+        // A `..` or flag-like operand is the folder's name only when given inline.
+        assert_eq!(parse_mcp_args(&args(&["--automation-read-root=../work"])), roots(Some("../work"), None));
+        assert_eq!(parse_mcp_args(&args(&["--automation-read-root=-work"])), roots(Some("-work"), None));
+
+        for bad in [
+            &["--automation-read-root"][..],
+            &["--automation-read-root", ""],
+            &["--automation-read-root", "   "],
+            &["--automation-read-root", "--foo"],
+            &["--automation-read-root="],
+            &["--automation-write-root"][..],
+            &["--automation-write-root", ""],
+            &["--automation-read-root", "/a", "--automation-read-root", "/b"],
+            &["--automation-read-root=/a", "--automation-read-root", "/b"],
+            &["--automation-write-root", "/a", "--automation-write-root=/b"],
+        ] {
+            assert!(parse_mcp_args(&args(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn roots_need_a_headless_server() {
+        let e = parse_mcp_args(&args(&["--connect", "127.0.0.1:7979", "--automation-read-root", "/work"])).unwrap_err();
+        assert!(e.contains("headless MCP server") && e.contains("#1585"), "{e}");
+        let e = parse_mcp_args(&args(&["--automation-write-root=/work", "--connect", "127.0.0.1:7979"])).unwrap_err();
+        assert!(e.contains("headless MCP server"), "{e}");
     }
 
     #[test]

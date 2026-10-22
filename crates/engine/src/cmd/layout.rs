@@ -830,6 +830,7 @@ fn run_plot(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let path = _path;
+                crate::file_access::check_write(path).map_err(|e| bad(cmd, e))?;
                 // Exclusively create a fresh temporary file and rename it into place so a planted
                 // `<path>.cadcraft-tmp` symlink cannot redirect the plot write (CWE-59).
                 crate::atomic_write::write_atomic(std::path::Path::new(path), &bytes).map_err(|e| bad(cmd, format!("{path}: {e}")))?;

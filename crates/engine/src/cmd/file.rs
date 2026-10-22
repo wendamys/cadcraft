@@ -201,6 +201,7 @@ fn run_script(s: &mut Session, p: &Value) -> Result<Value> {
         let path = _path;
         #[cfg(not(target_arch = "wasm32"))]
         {
+            crate::file_access::check_read(path).map_err(|e| bad("script", e))?;
             let bytes =
                 crate::capped_read::read_capped(std::path::Path::new(path), MAX_SCRIPT_BYTES).map_err(|e| bad("script", format!("{path}: {e}")))?;
             String::from_utf8_lossy(&bytes).into_owned()
@@ -276,6 +277,7 @@ pub fn read_file(path: &str) -> std::result::Result<ReadFile, String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let r = std::panic::catch_unwind(|| {
+            crate::file_access::check_read(path).map_err(|e| bad("open", e))?;
             let bytes =
                 crate::capped_read::read_capped(std::path::Path::new(path), MAX_DRAWING_BYTES).map_err(|e| bad("open", format!("{path}: {e}")))?;
             read_bytes(&bytes, path, Some(path.to_string()))
@@ -345,6 +347,7 @@ fn run_open(s: &mut Session, p: &Value) -> Result<Value> {
         let path = _path;
         #[cfg(not(target_arch = "wasm32"))]
         {
+            crate::file_access::check_read(path).map_err(|e| bad("open", e))?;
             let bytes =
                 crate::capped_read::read_capped(std::path::Path::new(path), MAX_DRAWING_BYTES).map_err(|e| bad("open", format!("{path}: {e}")))?;
             let i = open_bytes(s, &bytes, path, Some(path.to_string()))?;
@@ -417,6 +420,7 @@ fn save_as(s: &mut Session, cmd: &str, path: &str, opts: &SaveAs) -> Result<usiz
 fn store(path: &str, bytes: &[u8]) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        crate::file_access::check_write(path).map_err(|e| bad("save", e))?;
         // Exclusively create a fresh temporary file and rename it over `path`, so a planted
         // `<path>.cadcraft-tmp` symlink cannot redirect the write onto another file (CWE-59).
         crate::atomic_write::write_atomic(std::path::Path::new(path), bytes).map_err(|e| bad("save", format!("{path}: {e}")))
