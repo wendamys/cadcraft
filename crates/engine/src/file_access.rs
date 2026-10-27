@@ -105,16 +105,29 @@ impl AutomationRoots {
         #[cfg(windows)]
         {
             let normalized = path.replace('/', "\\");
-            let special = normalized.starts_with("\\\\") && !normalized.starts_with("\\\\?\\");
+            let verbatim_disk = normalized.strip_prefix("\\\\?\\").is_some_and(|p| {
+                let mut chars = p.chars();
+                chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next() == Some(':') && chars.next() == Some('\\')
+            });
+            let special = (normalized.starts_with("\\\\") && !verbatim_disk) || normalized.starts_with("\\??\\");
             let extended_network = normalized.to_ascii_lowercase().starts_with("\\\\?\\unc\\");
             if special || extended_network {
-                let candidate = if extended_network || normalized.starts_with("\\\\.\\") {
+                let candidate = if normalized.starts_with("\\\\?\\") || normalized.starts_with("\\\\.\\") || normalized.starts_with("\\??\\") {
                     PathBuf::from(&normalized)
                 } else {
                     PathBuf::from(format!("\\\\?\\UNC\\{}", normalized.trim_start_matches('\\')))
                 };
                 let allowed = [self.read.as_ref().filter(|_| access == Access::Read), self.write.as_ref()];
-                if candidate.components().any(|c| c == Component::ParentDir) || !allowed.iter().flatten().any(|r| inside(&candidate, &r.resolved)) {
+                if candidate.components().any(|c| c == Component::ParentDir)
+                    || !allowed.iter().flatten().any(|r| {
+                        // A special namespace needs a root in that namespace, not a disk root.
+                        let disk_root = match r.resolved.components().next() {
+                            Some(Component::Prefix(p)) => matches!(p.kind(), std::path::Prefix::VerbatimDisk(_)),
+                            _ => false,
+                        };
+                        !disk_root && inside(&candidate, &r.resolved)
+                    })
+                {
                     return Err(format!("automation path rejected: network or device path outside the roots: {path}"));
                 }
             }
@@ -397,6 +410,49 @@ mod tests {
                 let e = roots.check_with(path, access, false, |_| panic!("rejected namespace reached filesystem resolution")).unwrap_err();
                 assert!(e.contains("network or device path outside the roots"), "{e}");
             }
+        }
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn extended_devices_are_rejected_before_resolution() {
+        let (base, roots) = folders("extended-devices");
+        for path in [
+            r"\\?\GLOBALROOT\Device\Mup\h\s\x",
+            r"\\?\globalroot\Device\Mup\h\s\x",
+            r"\\?\Global\UNC\h\s\x",
+            r"\\?\gLoBaL\UNC\h\s\x",
+            r"\\?\pipe\x",
+            r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\x",
+            r"\??\UNC\h\s\x",
+            r"\??\C:\x",
+        ] {
+            for access in [Access::Read, Access::Write] {
+                let e = roots.check_with(path, access, false, |_| panic!("rejected device reached filesystem resolution")).unwrap_err();
+                assert!(e.contains("network or device path outside the roots"), "{e}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verbatim_disk_paths_inside_roots_are_accepted() {
+        let (base, roots) = folders("verbatim-disk");
+        for (folder, access) in [("in", Access::Read), ("out", Access::Write)] {
+            let path = std::fs::canonicalize(base.join(folder)).unwrap().join("new.dxf");
+            assert!(path.to_string_lossy().starts_with(r"\\?\"));
+            let calls = std::cell::Cell::new(0);
+            assert_eq!(
+                roots.check_with(&s(path.clone()), access, false, |_| {
+                    calls.set(calls.get() + 1);
+                    Ok(path.clone())
+                }),
+                Ok(())
+            );
+            assert_eq!(calls.get(), 1);
+            assert_eq!(roots.check(&s(path), access), Ok(()));
         }
         let _ = std::fs::remove_dir_all(base);
     }

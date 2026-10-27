@@ -332,7 +332,7 @@ fn every_file_a_command_touches_is_held_to_the_roots() {
     ok(&t[1]);
     refused(&t[2], "outside the read root");
     ok(&t[3]);
-    refused(&t[4], "outside the read root");
+    refused(&t[4], "xref file not found or outside the read roots");
     refused(&t[5], "outside the read root");
     refused(&t[6], "outside the read root");
     refused(&t[7], "outside the read root");

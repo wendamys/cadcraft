@@ -23,6 +23,8 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: storytold/craft-fonts
@@ -38,6 +40,8 @@ jobs:
           key: agent-cli-windows-x64
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
+      - name: Prove new regressions fail on old production code
+        run: python .github/scripts/check_root_red.py
       - name: Test PR integration and unit tests only
         run: |
           cargo test --locked -p cadcraft-cli --test mcp_roots
@@ -49,6 +53,8 @@ jobs:
           cargo test --locked -p cadcraft-cli --bin cadcraft-cli mcp_args_tests::roots_need_a_headless_server
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo test --locked -p cadcraft-engine --lib file_access::tests
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked -p cadcraft-engine --lib confined_xrefs_fall_back_beside_host_and_hide_missing_candidates
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Check focused root bypass mutations
         run: python .github/scripts/check_root_mutations.py

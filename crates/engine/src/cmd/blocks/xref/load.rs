@@ -213,7 +213,9 @@ pub(crate) fn find(path: &str, host: Option<&Path>, chosen: bool) -> Result<Path
     let found = {
         let mut found = None;
         for file in files {
-            crate::file_access::check_read(&file.to_string_lossy()).map_err(Missing::Automation)?;
+            if crate::file_access::check_read(&file.to_string_lossy()).is_err() {
+                continue;
+            }
             if file.is_file() {
                 found = Some(file);
                 break;
@@ -226,7 +228,13 @@ pub(crate) fn find(path: &str, host: Option<&Path>, chosen: bool) -> Result<Path
         let _ = files;
         None
     };
-    found.ok_or(refused.map_or(Missing::NotFound, Missing::Refused))
+    found.ok_or_else(|| {
+        if crate::file_access::current().is_some() {
+            Missing::Automation("automation path rejected: xref file not found or outside the read roots".into())
+        } else {
+            refused.map_or(Missing::NotFound, Missing::Refused)
+        }
+    })
 }
 
 /// Read a drawing file through the host's io hooks, counting its bytes against the load's total.
@@ -544,5 +552,35 @@ mod tests {
         assert!(has_prefix("SITE|Walls", "site|"));
         assert!(!has_prefix("SITE", "site|"));
         assert!(!has_prefix("é", "ab"));
+    }
+
+    #[test]
+    fn confined_xrefs_fall_back_beside_host_and_hide_missing_candidates() {
+        let base = std::env::temp_dir().join(format!("cc-xref-fallback-{}", std::process::id()));
+        let allowed = base.join("allowed");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&allowed).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let host = allowed.join("host.dxf");
+        let saved = outside.join("ref.dxf");
+        let copy = allowed.join("ref.dxf");
+        std::fs::write(&copy, "host copy").unwrap();
+        let roots = crate::file_access::AutomationRoots::new(Some(&allowed), None).unwrap().unwrap();
+        crate::file_access::confine(Some(&roots), || {
+            for chosen in [false, true] {
+                assert_eq!(find(&saved.to_string_lossy(), Some(&host), chosen), Ok(copy.clone()));
+                std::fs::write(&saved, "outside must not win").unwrap();
+                assert_eq!(find(&saved.to_string_lossy(), Some(&host), chosen), Ok(copy.clone()));
+                std::fs::remove_file(&saved).unwrap();
+            }
+            std::fs::remove_file(&copy).unwrap();
+            let missing = find(&saved.to_string_lossy(), Some(&host), true).unwrap_err();
+            std::fs::write(&saved, "private").unwrap();
+            let denied = find(&saved.to_string_lossy(), Some(&host), true).unwrap_err();
+            let inside_missing = find(&copy.to_string_lossy(), Some(&host), true).unwrap_err();
+            assert_eq!(missing, denied);
+            assert_eq!(denied, inside_missing);
+        });
+        let _ = std::fs::remove_dir_all(base);
     }
 }

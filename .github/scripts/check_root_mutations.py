@@ -15,7 +15,10 @@ CASES = [
     ("autosave-setting", "sysvars.rs", '            crate::file_access::check_write_directory(path).map_err(|msg| EngineError::BadParams { cmd: "setvar".into(), msg })?;', "", CLI, "savefilepath_outside_the_write_root_is_refused"),
     ("atomic-target", "atomic_write.rs", "    crate::file_access::check_write(&path.to_string_lossy()).map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e))?;", "", ENGINE, "atomic_destination_checks_write_authority"),
     ("atomic-temp", "atomic_write.rs", "        crate::file_access::check_write(&tmp.to_string_lossy()).map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e))?;", "", ENGINE, "atomic_temporary_stays_inside_the_write_root"),
-    ("xref-before-stat", "cmd/blocks/xref/load.rs", "            crate::file_access::check_read(&file.to_string_lossy()).map_err(Missing::Automation)?;", "", CLI, "xattach_rejects_existing_and_missing_outside_candidates_equally"),
+    ("xref-before-stat", "cmd/blocks/xref/load.rs", "            if crate::file_access::check_read(&file.to_string_lossy()).is_err() {\n                continue;\n            }", "", CLI, "xattach_rejects_existing_and_missing_outside_candidates_equally"),
+    ("xref-abort-instead-of-fallback", "cmd/blocks/xref/load.rs", "            if crate::file_access::check_read(&file.to_string_lossy()).is_err() {\n                continue;\n            }", "            crate::file_access::check_read(&file.to_string_lossy()).map_err(Missing::Automation)?;", ENGINE, "confined_xrefs_fall_back_beside_host_and_hide_missing_candidates"),
+    ("device-old-guard", "file_access.rs", 'let special = (normalized.starts_with("\\\\\\\\") && !verbatim_disk) || normalized.starts_with("\\\\??\\\\");', 'let special = normalized.starts_with("\\\\\\\\") && !normalized.starts_with("\\\\?\\\\");', ENGINE, "extended_devices_are_rejected_before_resolution"),
+    ("device-no-verbatim-disk", "file_access.rs", "&& !verbatim_disk", "&& true", ENGINE, "verbatim_disk_paths_inside_roots_are_accepted"),
     ("network-before-resolve", "file_access.rs", "if special || extended_network {", "if false && (special || extended_network) {", ENGINE, "network_paths_are_rejected_before_resolution"),
 ]
 

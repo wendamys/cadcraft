@@ -62,9 +62,13 @@ configuration works across the suite) keep the agent to the folders you give it:
   its nearest existing folder's links are followed and the rest must be plain names, so `..` below
   a folder that doesn't exist is refused, as is a link that leads nowhere. The result is compared
   with the root by whole folder names: `/work2/x` is not inside `/work`. On Windows case is ignored,
-  remote UNC and device namespaces outside the roots are refused before filesystem resolution,
+  UNC and special Windows namespaces (including `\\?\GLOBALROOT`, `\\?\Global`, `\\?\pipe`,
+  volume GUID paths and `\??\` paths) must be lexically inside an allowed root before filesystem
+  resolution; ordinary `\\?\C:\...` drive paths proceed to the usual link and root checks,
   and device names (`CON`, `NUL`, `COM1`…) are refused. Xref candidates are checked before probing
-  whether they exist. Atomic writes also check their actual temporary paths; a file symlink outside
+  whether they exist; refused candidates are skipped so a copy beside the host can still load.
+  With roots active, missing and refused xref candidates produce the same error. Atomic writes
+  also check their actual temporary paths; a file symlink outside
   the write root pointing into it cannot place a temporary file beside the link.
 - A refused path is an ordinary tool error with `isError: true` that the agent can read and
   correct, for example `automation path rejected: outside the write root
