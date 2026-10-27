@@ -40,7 +40,11 @@ jobs:
         run: |
           cargo test --locked -p cadcraft-cli --test mcp_roots
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          cargo test --locked -p cadcraft-cli --bin cadcraft-cli mcp_args_tests
+          cargo test --locked -p cadcraft-cli --bin cadcraft-cli mcp_args_tests::mcp_without_connect_is_headless
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked -p cadcraft-cli --bin cadcraft-cli mcp_args_tests::mcp_takes_the_automation_roots_once_each
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked -p cadcraft-cli --bin cadcraft-cli mcp_args_tests::roots_need_a_headless_server
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo test --locked -p cadcraft-engine --lib file_access::tests
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
