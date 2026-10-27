@@ -46,10 +46,12 @@ fn confined_lisp_file_functions_check_paths_at_use() {
         }
     });
     // A handle opened without roots must still be checked when close writes its contents.
-    ok(&mut s, &format!("(setq f (open {literal} \"w\"))"));
-    ok(&mut s, "(write-line \"changed\" f)");
-    crate::file_access::confine(Some(&roots), || assert_eq!(ok(&mut s, "(close f)"), "nil"));
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "42");
+    for mode in ["w", "a"] {
+        ok(&mut s, &format!("(setq f (open {literal} \"{mode}\"))"));
+        ok(&mut s, "(write-line \"changed\" f)");
+        crate::file_access::confine(Some(&roots), || assert_eq!(ok(&mut s, "(close f)"), "nil"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "42");
+    }
     let _ = std::fs::remove_dir_all(base);
 }
 

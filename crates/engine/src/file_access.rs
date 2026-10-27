@@ -343,7 +343,11 @@ mod tests {
     #[test]
     fn slash_namespaces_are_blocked_at_file_boundaries() {
         let (base, roots) = folders("normalized-boundaries");
-        crate::cmd::file::set_io(crate::cmd::file::IoHooks { read: cadcraft_io::read, write: cadcraft_io::write, plot: None });
+        crate::cmd::file::set_io(crate::cmd::file::IoHooks {
+            read: |bytes, path| cadcraft_io::read(bytes, path).map_err(|e| e.to_string()),
+            write: |drawing, path| cadcraft_io::write(drawing, path).map_err(|e| e.to_string()),
+            plot: None,
+        });
         confine(Some(&roots), || {
             without_filesystem_resolution(|| {
                 let mut session = crate::Session::new();
