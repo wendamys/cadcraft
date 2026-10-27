@@ -358,6 +358,16 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn slash_namespaces_are_blocked_at_file_boundaries() {
+        // File hooks are process-wide: isolate this test from other tests' stand-in writers.
+        if std::env::var_os("CADCRAFT_TEST_FILE_BOUNDARIES_CHILD").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .env("CADCRAFT_TEST_FILE_BOUNDARIES_CHILD", "1")
+                .args(["--exact", "file_access::tests::slash_namespaces_are_blocked_at_file_boundaries", "--nocapture"])
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
         let (base, roots) = folders("normalized-boundaries");
         crate::cmd::file::set_io(crate::cmd::file::IoHooks {
             read: |bytes, path| cadcraft_io::read(bytes, path).map_err(|e| e.to_string()),
