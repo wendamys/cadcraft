@@ -18,9 +18,13 @@ fn savefilepath_outside_the_write_root_is_refused() {
     let base = folders("savefilepath");
     let (_, t) = run(
         &["--automation-read-root", &s(&base.join("in")), "--automation-write-root", &s(&base.join("out"))],
-        &[("execute", json!({"command":"setvar", "params":{"name":"SAVEFILEPATH", "value":s(&base.join("outside"))}}))],
+        &[
+            ("execute", json!({"command":"setvar", "params":{"name":"SAVEFILEPATH", "value":s(&base.join("outside"))}})),
+            ("execute", json!({"command":"setvar", "params":{"name":"SAVEFILEPATH", "value":s(&base.join("out"))}})),
+        ],
     );
     refused(&t[0], "outside the write root");
+    ok(&t[1]);
     let _ = std::fs::remove_dir_all(base);
 }
 

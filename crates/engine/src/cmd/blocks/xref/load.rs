@@ -139,11 +139,12 @@ fn folder(host: Option<&Path>) -> Option<PathBuf> {
 }
 
 /// Why a referenced drawing wasn't found.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Missing {
     NotFound,
     /// The saved path isn't followed, and there is no file of its name beside the host.
     Refused(Refused),
+    Automation(String),
 }
 
 impl Missing {
@@ -154,6 +155,7 @@ impl Missing {
                 (XrefStatus::NotFound, format!("{path}: {why}"))
             }
             Self::Refused(r) => (XrefStatus::Unresolved, format!("{path}: not opened, {r}")),
+            Self::Automation(e) => (XrefStatus::Unresolved, e),
         }
     }
 }
@@ -208,7 +210,17 @@ pub(crate) fn find(path: &str, host: Option<&Path>, chosen: bool) -> Result<Path
     }
     let (files, refused) = candidates(path, host, chosen);
     #[cfg(not(target_arch = "wasm32"))]
-    let found = files.into_iter().find(|p| p.is_file());
+    let found = {
+        let mut found = None;
+        for file in files {
+            crate::file_access::check_read(&file.to_string_lossy()).map_err(Missing::Automation)?;
+            if file.is_file() {
+                found = Some(file);
+                break;
+            }
+        }
+        found
+    };
     #[cfg(target_arch = "wasm32")]
     let found: Option<PathBuf> = {
         let _ = files;

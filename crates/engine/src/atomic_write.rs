@@ -30,6 +30,7 @@ const MAX_TRIES: u32 = 32;
 /// are written through the retained handle and flushed, and the temporary is then renamed over
 /// `path`. On any failure the temporary is removed and the original `path` is left untouched.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    crate::file_access::check_write(&path.to_string_lossy()).map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e))?;
     let permissions = match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.is_file() => Some(meta.permissions()),
         Ok(_) => None,
@@ -70,6 +71,7 @@ fn create_temp(dir: &Path, permissions: Option<&Permissions>) -> io::Result<(Fil
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
         let tmp = dir.join(format!(".cadcraft-tmp-{pid}-{seq}-{nanos}"));
+        crate::file_access::check_write(&tmp.to_string_lossy()).map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e))?;
         match create_exclusive(&tmp, permissions) {
             Ok(file) => return Ok((file, tmp)),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {

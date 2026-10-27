@@ -91,7 +91,37 @@ impl AutomationRoots {
     /// write it may also read back). A write may lie only under the write root, and not at the
     /// root itself, whose save-style temporary file would sit beside it.
     pub fn check(&self, path: &str, access: Access) -> Result<(), String> {
-        let target = resolve(path)?;
+        self.check_with(path, access, false, resolve)
+    }
+
+    fn check_with(
+        &self,
+        path: &str,
+        access: Access,
+        directory: bool,
+        resolve_path: impl FnOnce(&str) -> Result<PathBuf, String>,
+    ) -> Result<(), String> {
+        // Reject remote/device namespaces lexically, before canonicalize can contact a host.
+        #[cfg(windows)]
+        {
+            let normalized = path.replace('/', "\\");
+            let special = normalized.starts_with("\\\\") && !normalized.starts_with("\\\\?\\");
+            let extended_network = normalized.to_ascii_lowercase().starts_with("\\\\?\\unc\\");
+            if special || extended_network {
+                let candidate = if extended_network {
+                    PathBuf::from(&normalized)
+                } else if normalized.starts_with("\\\\.\\") {
+                    PathBuf::from(&normalized)
+                } else {
+                    PathBuf::from(format!("\\\\?\\UNC\\{}", normalized.trim_start_matches('\\')))
+                };
+                let allowed = [self.read.as_ref().filter(|_| access == Access::Read), self.write.as_ref()];
+                if candidate.components().any(|c| c == Component::ParentDir) || !allowed.iter().flatten().any(|r| inside(&candidate, &r.resolved)) {
+                    return Err(format!("automation path rejected: network or device path outside the roots: {path}"));
+                }
+            }
+        }
+        let target = resolve_path(path)?;
         if access == Access::Read {
             let roots = [self.read.as_ref(), self.write.as_ref()];
             if roots.iter().flatten().any(|r| inside(&target, &r.resolved)) {
@@ -109,7 +139,7 @@ impl AutomationRoots {
             return Err(format!("automation path rejected: outside the write root {}: {path}", shown.display()));
         }
         // A write to the root itself would put its `.cadcraft-tmp` file beside the root, outside it.
-        if same(&target, folder) {
+        if !directory && same(&target, folder) {
             return Err(format!("automation path rejected: the write root itself cannot be written: {path}"));
         }
         Ok(())
@@ -150,6 +180,11 @@ pub fn check_read(path: &str) -> Result<(), String> {
 /// May `path` be written here? Always, without roots in force.
 pub fn check_write(path: &str) -> Result<(), String> {
     current().map_or(Ok(()), |r| r.check(path, Access::Write))
+}
+
+/// May files be stored in this directory? The write root itself is a valid directory.
+pub fn check_write_directory(path: &str) -> Result<(), String> {
+    current().map_or(Ok(()), |r| r.check_with(path, Access::Write, true, resolve))
 }
 
 /// `path` made absolute with its links followed; for a path that doesn't exist (yet), its nearest
@@ -240,7 +275,10 @@ mod tests {
         let path = base.join("outside/Drawing_1234-abc_1.sv$");
         std::fs::write(&path, "private").unwrap();
         assert_eq!(crate::autosave::recoverable(&base.join("outside"), "").len(), 1);
-        confine(Some(&roots), || assert!(crate::autosave::recoverable(&base.join("outside"), "").is_empty()));
+        confine(Some(&roots), || {
+            assert!(crate::autosave::recovery_entries(&base.join("outside")).is_none());
+            assert!(crate::autosave::recoverable(&base.join("outside"), "").is_empty());
+        });
         let _ = std::fs::remove_dir_all(base);
     }
 
@@ -267,6 +305,68 @@ mod tests {
     }
 
     #[test]
+    fn recovery_prune_checks_the_directory() {
+        let (base, roots) = folders("prune-directory");
+        let path = base.join("outside/1234-abc.lock");
+        std::fs::write(&path, "private").unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::UNIX_EPOCH)).unwrap();
+        confine(Some(&roots), || crate::autosave::prune_locks(&base.join("outside")));
+        assert!(path.exists());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn recovery_lock_metadata_does_not_follow_outside_links() {
+        let (base, roots) = folders("recovery-lock-metadata");
+        std::fs::write(base.join("in/Drawing_1234-abc_1.sv$"), "drawing").unwrap();
+        let target = base.join("outside/secret.dxf");
+        let link = base.join("in/1234-abc.lock");
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target, &link).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        confine(Some(&roots), || assert_eq!(crate::autosave::recoverable(&base.join("in"), "").len(), 1));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn recovery_command_reports_denied_directory_and_discard() {
+        let (base, roots) = folders("recovery-command");
+        let mut session = crate::Session::new();
+        let previous = crate::autosave::savefilepath();
+        crate::autosave::set_savefilepath(&s(base.join("outside")));
+        confine(Some(&roots), || {
+            let e = session.execute("drawingrecovery", &serde_json::json!({})).unwrap_err();
+            assert!(e.to_string().contains("outside the read root"), "{e}");
+        });
+        let path = base.join("in/Drawing_1234-abc_1.sv$");
+        std::fs::write(&path, "private").unwrap();
+        crate::autosave::set_savefilepath(&s(base.join("in")));
+        confine(Some(&roots), || {
+            let e = session.execute("drawingrecovery", &serde_json::json!({"action":"discard", "path":s(path.clone())})).unwrap_err();
+            assert!(e.to_string().contains("outside the write root"), "{e}");
+        });
+        assert!(path.exists());
+        crate::autosave::set_savefilepath(&previous);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn atomic_destination_checks_write_authority() {
+        let (base, roots) = folders("atomic-destination");
+        let target = base.join("outside/secret.dxf");
+        let link = base.join("out/link.dxf");
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target, &link).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        confine(Some(&roots), || assert!(crate::atomic_write::write_atomic(&link, b"escape").is_err()));
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn atomic_temporary_stays_inside_the_write_root() {
         let (base, roots) = folders("atomic-parent");
         let target = base.join("out/a.dxf");
@@ -288,9 +388,14 @@ mod tests {
     #[test]
     fn network_paths_are_rejected_before_resolution() {
         let (base, roots) = folders("network");
-        for path in [r"\\127.0.0.1\c$\Windows\win.ini", r"\\?\UNC\127.0.0.1\c$\Windows\win.ini", r"\\.\C:\Windows\win.ini", "//127.0.0.1/c$/Windows/win.ini"] {
+        for path in [
+            r"\\127.0.0.1\c$\Windows\win.ini",
+            r"\\?\UNC\127.0.0.1\c$\Windows\win.ini",
+            r"\\.\C:\Windows\win.ini",
+            "//127.0.0.1/c$/Windows/win.ini",
+        ] {
             for access in [Access::Read, Access::Write] {
-                let e = roots.check(path, access).unwrap_err();
+                let e = roots.check_with(path, access, false, |_| panic!("rejected namespace reached filesystem resolution")).unwrap_err();
                 assert!(e.contains("network or device path outside the roots"), "{e}");
             }
         }

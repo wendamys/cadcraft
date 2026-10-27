@@ -46,6 +46,9 @@ configuration works across the suite) keep the agent to the folders you give it:
   templates, `appload` and LISP `load`/`open`, support files (`linetype`, `hatch.patterns`,
   `aliasedit`, `reinit`), data links, plot style and plotter configuration files named by a path,
   and the shared plotter settings folder.
+- Drawing Recovery checks its directory before listing, checks locks before reading their metadata,
+  and checks write authority before discarding files or pruning locks.
+  `setvar SAVEFILEPATH` requires a directory inside the write root (the root itself is allowed).
 - Every file a command **writes** must lie inside the **write root**: `save`/`qsave`/`saveas`
   (including the temporary file written beside the destination), `export`, `plot`, `publish`,
   `pdfbook`, `wblock`, data extraction, table export, plot style and plotter saves, the shared
@@ -59,8 +62,10 @@ configuration works across the suite) keep the agent to the folders you give it:
   its nearest existing folder's links are followed and the rest must be plain names, so `..` below
   a folder that doesn't exist is refused, as is a link that leads nowhere. The result is compared
   with the root by whole folder names: `/work2/x` is not inside `/work`. On Windows case is ignored,
-  UNC paths are resolved like drive-letter ones, and device names (`CON`, `NUL`, `COM1`…) are
-  refused.
+  remote UNC and device namespaces outside the roots are refused before filesystem resolution,
+  and device names (`CON`, `NUL`, `COM1`…) are refused. Xref candidates are checked before probing
+  whether they exist. Atomic writes also check their actual temporary paths; a file symlink outside
+  the write root pointing into it cannot place a temporary file beside the link.
 - A refused path is an ordinary tool error with `isError: true` that the agent can read and
   correct, for example `automation path rejected: outside the write root
   /work/project/out: /etc/x.png`, `automation path rejected: outside the read root (or the write

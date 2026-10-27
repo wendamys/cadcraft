@@ -31,6 +31,10 @@ pub fn specs() -> Vec<CommandSpec> {
 /// Drawing Recovery: list the autosave files that apps which stopped left in SAVEFILEPATH, open
 /// one as an unsaved copy, or delete one. Only listed files can be opened or deleted.
 fn run_drawingrecovery(s: &mut Session, p: &Value) -> Result<Value> {
+    let dir = crate::autosave::savefilepath();
+    if !dir.is_empty() {
+        crate::file_access::check_read(&dir).map_err(|e| bad("drawingrecovery", e))?;
+    }
     let action = str_param(p, "action").unwrap_or("list").to_ascii_lowercase();
     let files = recoverable_files();
     let pick = || {
@@ -45,6 +49,7 @@ fn run_drawingrecovery(s: &mut Session, p: &Value) -> Result<Value> {
         }
         "discard" => {
             let f = pick()?;
+            crate::file_access::check_write(&f.path).map_err(|e| bad("drawingrecovery", e))?;
             discard_file(&f.path);
             Ok(json!({ "files": recoverable_files() }))
         }

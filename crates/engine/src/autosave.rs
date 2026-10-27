@@ -270,15 +270,21 @@ mod native {
     }
 
     fn lock_age(dir: &Path, instance: &str) -> Option<Duration> {
+        crate::file_access::check_read(&lock_path(dir, instance).to_string_lossy()).ok()?;
         let m = std::fs::metadata(lock_path(dir, instance)).and_then(|m| m.modified()).ok()?;
         // A time in the future (clock changes) counts as fresh.
         Some(SystemTime::now().duration_since(m).unwrap_or_default())
     }
 
+    pub(crate) fn recovery_entries(dir: &Path) -> Option<std::fs::ReadDir> {
+        crate::file_access::check_read(&dir.to_string_lossy()).ok()?;
+        std::fs::read_dir(dir).ok()
+    }
+
     /// The autosave files in `dir` left behind by apps that are no longer running (never those of
     /// `own`, this app's instance), oldest first.
     pub fn recoverable(dir: &Path, own: &str) -> Vec<Recoverable> {
-        let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+        let Some(entries) = recovery_entries(dir) else { return Vec::new() };
         let mut alive: HashMap<String, bool> = HashMap::new();
         let mut out = Vec::new();
         for e in entries.flatten().take(10_000) {
@@ -302,6 +308,9 @@ mod native {
     /// files of stopped apps that have no files left. Only an autosave file is deleted: a path
     /// whose name doesn't parse as one ([`parse_file_name`]) is left alone.
     pub fn discard(path: &str) {
+        if crate::file_access::check_write(path).is_err() {
+            return;
+        }
         let ours = Path::new(path).file_name().and_then(std::ffi::OsStr::to_str).is_some_and(|n| parse_file_name(n).is_some());
         if !ours {
             log::warn!("autosave: not deleting {path}: not an autosave file");
@@ -321,13 +330,16 @@ mod native {
     /// names of the form `<instance id>.lock` are ours ([`parse_lock_name`]): SAVEFILEPATH may
     /// point at a folder shared with other programs, whose `Cargo.lock` or `foo.lock` stay.
     pub fn prune_locks(dir: &Path) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Some(entries) = recovery_entries(dir) else { return };
         let names: Vec<String> = entries.flatten().take(10_000).map(|e| e.file_name().to_string_lossy().to_string()).collect();
         for n in &names {
             let Some(instance) = parse_lock_name(n) else { continue };
             let has_files = names.iter().any(|f| parse_file_name(f).is_some_and(|(_, i, _)| i == instance));
             if !has_files && !instance_alive(lock_age(dir, instance)) {
-                let _ = std::fs::remove_file(dir.join(n));
+                let path = dir.join(n);
+                if crate::file_access::check_write(&path.to_string_lossy()).is_ok() {
+                    let _ = std::fs::remove_file(path);
+                }
             }
         }
     }

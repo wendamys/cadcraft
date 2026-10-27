@@ -363,7 +363,11 @@ pub fn set(s: &mut Session, name: &str, v: &Value) -> Result<()> {
         "SAVETIME" => crate::autosave::set_savetime(
             as_f64(v).filter(|m| *m >= 0.0 && *m <= f64::from(crate::autosave::MAX_SAVETIME)).ok_or_else(bad)?.round() as u32,
         ),
-        "SAVEFILEPATH" => crate::autosave::set_savefilepath(v.as_str().ok_or_else(bad)?),
+        "SAVEFILEPATH" => {
+            let path = v.as_str().ok_or_else(bad)?.trim();
+            crate::file_access::check_write_directory(path).map_err(|msg| EngineError::BadParams { cmd: "setvar".into(), msg })?;
+            crate::autosave::set_savefilepath(path);
+        }
         // A number is in degrees; text is an angle typed in AUNITS (SETVAR at the command line).
         "ANGBASE" => {
             let a = match v {
