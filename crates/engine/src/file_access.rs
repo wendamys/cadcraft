@@ -390,12 +390,9 @@ mod tests {
     #[test]
     fn network_paths_are_rejected_before_resolution() {
         let (base, roots) = folders("network");
-        for path in [
-            r"\\127.0.0.1\c$\Windows\win.ini",
-            r"\\?\UNC\127.0.0.1\c$\Windows\win.ini",
-            r"\\.\C:\Windows\win.ini",
-            "//127.0.0.1/c$/Windows/win.ini",
-        ] {
+        for path in
+            [r"\\127.0.0.1\c$\Windows\win.ini", r"\\?\UNC\127.0.0.1\c$\Windows\win.ini", r"\\.\C:\Windows\win.ini", "//127.0.0.1/c$/Windows/win.ini"]
+        {
             for access in [Access::Read, Access::Write] {
                 let e = roots.check_with(path, access, false, |_| panic!("rejected namespace reached filesystem resolution")).unwrap_err();
                 assert!(e.contains("network or device path outside the roots"), "{e}");
