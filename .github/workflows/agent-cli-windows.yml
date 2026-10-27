@@ -1,0 +1,97 @@
+name: Agent CLI Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['agent-roots-*']
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      RUST_BACKTRACE: 1
+      CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+      CRAFT_FONTS_REQUIRED: '1'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: 3d9ab3a132ed0eff457e424226a435a901da30d3
+          path: craft-fonts
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: agent-cli-windows-x64
+      - name: Test PR integration and unit tests only
+        run: |
+          cargo test --locked -p cadcraft-cli --test mcp_roots
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked -p cadcraft-cli --bin cadcraft-cli mcp_args_tests
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked -p cadcraft-engine --lib file_access::tests
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Check read and write denial mutations
+        run: |
+          $source = 'crates/engine/src/file_access.rs'
+          $original = [IO.File]::ReadAllText($source)
+          foreach ($kind in @('read', 'write')) {
+            $pattern = '(?s)(pub fn check_' + $kind + '\(path: &str\) -> Result<\(\), String> \{).*?\n\}'
+            $mutated = [regex]::Replace($original, $pattern, '$1' + "`n    let _ = path;`n    Ok(())`n}")
+            if ($mutated -eq $original) { throw "Mutation did not apply: $kind" }
+            try {
+              [IO.File]::WriteAllText($source, $mutated)
+              $filter = if ($kind -eq 'read') { 'files_open_only_from_inside_the_read_root' } else { 'writes_go_only_into_the_write_root_and_leave_no_temp_file_outside' }
+              cargo test --locked -p cadcraft-cli --test mcp_roots $filter 2>&1 | Tee-Object "mutation-$kind.txt"
+              $failed = $LASTEXITCODE
+              if ($failed -eq 0) { throw "Surviving mutation: $kind" }
+              if (-not (Select-String -Path "mutation-$kind.txt" -SimpleMatch 'test result: FAILED.')) { throw "Mutation failed to run tests: $kind" }
+            } finally {
+              [IO.File]::WriteAllText($source, $original)
+            }
+          }
+          exit 0
+      - name: Build CLI for Windows x64
+        run: |
+          cargo build --locked --release -p cadcraft-cli --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Package with official 0.13.0 portable companions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.13.0 --repo storytold/cadcraft --pattern cadcraft-0.13.0-windows-x64-portable.zip --dir official
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Expand-Archive official/cadcraft-0.13.0-windows-x64-portable.zip official/unpacked
+          $cli = Get-ChildItem official/unpacked -Filter cadcraft-cli.exe -Recurse
+          if (@($cli).Count -ne 1) { throw 'Expected one official CLI' }
+          New-Item -ItemType Directory -Force dist/package | Out-Null
+          Copy-Item -Path "$($cli.Directory.FullName)/*" -Destination dist/package -Recurse
+          Copy-Item target/x86_64-pc-windows-msvc/release/cadcraft-cli.exe dist/package/cadcraft-cli.exe -Force
+          Copy-Item NOTICE dist/package/NOTICE -Force
+          $sums = Get-ChildItem dist/package -File | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          }
+          $sums | Set-Content dist/package/SHA256SUMS.txt -Encoding utf8NoBOM
+          Compress-Archive -Path dist/package/* -DestinationPath dist/cadcraft-cli-0.13.0-roots-windows-x64.zip
+          $zipHash = (Get-FileHash dist/cadcraft-cli-0.13.0-roots-windows-x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$zipHash  cadcraft-cli-0.13.0-roots-windows-x64.zip" | Set-Content dist/SHA256SUMS.txt -Encoding utf8NoBOM
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cadcraft-cli-0.13.0-roots-windows-x64
+          path: |
+            dist/cadcraft-cli-0.13.0-roots-windows-x64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
