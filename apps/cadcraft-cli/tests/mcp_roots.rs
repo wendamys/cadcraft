@@ -13,6 +13,32 @@ use serde_json::{Value, json};
 
 const INIT: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#;
 
+#[test]
+fn savefilepath_outside_the_write_root_is_refused() {
+    let base = folders("savefilepath");
+    let (_, t) = run(
+        &["--automation-read-root", &s(&base.join("in")), "--automation-write-root", &s(&base.join("out"))],
+        &[("execute", json!({"command":"setvar", "params":{"name":"SAVEFILEPATH", "value":s(&base.join("outside"))}}))],
+    );
+    refused(&t[0], "outside the write root");
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+fn xattach_rejects_existing_and_missing_outside_candidates_equally() {
+    let base = folders("xref-oracle");
+    let path = base.join("outside/b.dxf");
+    let calls = [("execute", json!({"command":"xattach", "params":{"path":s(&path), "name":"outside"}}))];
+    let args = ["--automation-read-root", &s(&base.join("in"))];
+    let (_, existing) = run(&args, &calls);
+    std::fs::remove_file(&path).unwrap();
+    let (_, missing) = run(&args, &calls);
+    refused(&existing[0], "automation path rejected");
+    refused(&missing[0], "automation path rejected");
+    assert_eq!(existing[0].text, missing[0].text);
+    let _ = std::fs::remove_dir_all(base);
+}
+
 /// A folder holding `in` (the read root, with `a.dxf`), `out` (the write root), `outside` (with
 /// `b.dxf`) and `in2` (a sibling with the same prefix as `in`).
 fn folders(tag: &str) -> PathBuf {

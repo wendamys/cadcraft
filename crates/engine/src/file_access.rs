@@ -234,6 +234,69 @@ fn is_device_name(component: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn recovery_listing_checks_the_directory() {
+        let (base, roots) = folders("recovery-list");
+        let path = base.join("outside/Drawing_1234-abc_1.sv$");
+        std::fs::write(&path, "private").unwrap();
+        assert_eq!(crate::autosave::recoverable(&base.join("outside"), "").len(), 1);
+        confine(Some(&roots), || assert!(crate::autosave::recoverable(&base.join("outside"), "").is_empty()));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn recovery_discard_checks_each_write() {
+        let (base, roots) = folders("recovery-discard");
+        let path = base.join("in/Drawing_1234-abc_1.sv$");
+        std::fs::write(&path, "private").unwrap();
+        confine(Some(&roots), || crate::autosave::discard(&s(path.clone())));
+        assert!(path.exists(), "a readable recovery file is not necessarily writable");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn recovery_prune_checks_each_write() {
+        let (base, roots) = folders("recovery-prune");
+        let path = base.join("in/1234-abc.lock");
+        std::fs::write(&path, "private").unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::UNIX_EPOCH)).unwrap();
+        confine(Some(&roots), || crate::autosave::prune_locks(&base.join("in")));
+        assert!(path.exists(), "a stale lock in a read-only root must survive");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn atomic_temporary_stays_inside_the_write_root() {
+        let (base, roots) = folders("atomic-parent");
+        let target = base.join("out/a.dxf");
+        std::fs::write(&target, "original").unwrap();
+        let link = base.join("outside/link.dxf");
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target, &link).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        confine(Some(&roots), || {
+            assert!(crate::atomic_write::write_atomic(&link, b"escape").is_err());
+        });
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read(&target).unwrap(), b"original");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn network_paths_are_rejected_before_resolution() {
+        let (base, roots) = folders("network");
+        for path in [r"\\127.0.0.1\c$\Windows\win.ini", r"\\?\UNC\127.0.0.1\c$\Windows\win.ini", r"\\.\C:\Windows\win.ini", "//127.0.0.1/c$/Windows/win.ini"] {
+            for access in [Access::Read, Access::Write] {
+                let e = roots.check(path, access).unwrap_err();
+                assert!(e.contains("network or device path outside the roots"), "{e}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(base);
+    }
+
     /// A fresh folder holding `in` (read root), `out` (write root) and `outside`.
     fn folders(name: &str) -> (PathBuf, Arc<AutomationRoots>) {
         let base = std::env::temp_dir().join(format!("cc-file-access-{name}-{}", std::process::id()));
