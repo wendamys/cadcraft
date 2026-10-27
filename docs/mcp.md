@@ -62,9 +62,11 @@ configuration works across the suite) keep the agent to the folders you give it:
   its nearest existing folder's links are followed and the rest must be plain names, so `..` below
   a folder that doesn't exist is refused, as is a link that leads nowhere. The result is compared
   with the root by whole folder names: `/work2/x` is not inside `/work`. On Windows case is ignored,
-  UNC and special Windows namespaces (including `\\?\GLOBALROOT`, `\\?\Global`, `\\?\pipe`,
-  volume GUID paths and `\??\` paths) must be lexically inside an allowed root before filesystem
-  resolution; ordinary `\\?\C:\...` drive paths proceed to the usual link and root checks,
+  paths are normalized lexically by Windows before any filesystem resolution; only disk and
+  verbatim disk prefixes are accepted. UNC and special Windows namespaces (including
+  `\\?\GLOBALROOT`, `\\?\Global`, `\\?\pipe`, volume GUID paths and `\??\` paths) are refused,
+  including paths that become such namespaces after normalization. Ordinary `\\?\C:\...` drive
+  paths and normalized local slash variants proceed to the usual link and root checks,
   and device names (`CON`, `NUL`, `COM1`…) are refused. Xref candidates are checked before probing
   whether they exist; refused candidates are skipped so a copy beside the host can still load.
   With roots active, missing and refused xref candidates produce the same error. Atomic writes

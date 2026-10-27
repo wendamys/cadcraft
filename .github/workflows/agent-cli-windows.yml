@@ -56,6 +56,10 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo test --locked -p cadcraft-engine --lib confined_xrefs_fall_back_beside_host_and_hide_missing_candidates
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked -p cadcraft-engine --lib confined_lisp_file_functions_check_paths_at_use
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Check engine Clippy
+        run: cargo clippy --locked -p cadcraft-engine --lib -- -D warnings
       - name: Check focused root bypass mutations
         run: python .github/scripts/check_root_mutations.py
       - name: Build CLI for Windows x64

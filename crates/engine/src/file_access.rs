@@ -99,17 +99,19 @@ impl AutomationRoots {
         path: &str,
         access: Access,
         directory: bool,
-        resolve_path: impl FnOnce(&str) -> Result<PathBuf, String>,
+        resolve_path: impl FnOnce(&Path) -> Result<PathBuf, String>,
     ) -> Result<(), String> {
         // Reject remote/device namespaces lexically, before canonicalize can contact a host.
         #[cfg(windows)]
         {
             let normalized = path.replace('/', "\\");
-            let verbatim_disk = normalized.strip_prefix("\\\\?\\").is_some_and(|p| {
+            // A disk-shaped spelling may still normalize to a network/device namespace.
+            // Only absolute() below classifies it; mixed separators are not verbatim.
+            let disk_spelling = normalized.strip_prefix("\\\\?\\").is_some_and(|p| {
                 let mut chars = p.chars();
                 chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next() == Some(':') && chars.next() == Some('\\')
             });
-            let special = (normalized.starts_with("\\\\") && !verbatim_disk) || normalized.starts_with("\\??\\");
+            let special = (normalized.starts_with("\\\\") && !disk_spelling) || normalized.starts_with("\\??\\");
             let extended_network = normalized.to_ascii_lowercase().starts_with("\\\\?\\unc\\");
             if special || extended_network {
                 let candidate = if normalized.starts_with("\\\\?\\") || normalized.starts_with("\\\\.\\") || normalized.starts_with("\\??\\") {
@@ -132,7 +134,19 @@ impl AutomationRoots {
                 }
             }
         }
-        let target = resolve_path(path)?;
+        if path.is_empty() {
+            return Err("automation path rejected: path is empty".into());
+        }
+        // Check as given: making `…\NUL` absolute turns it into the device path `\\.\NUL`.
+        if cfg!(windows) && Path::new(path).components().any(|c| matches!(c, Component::Normal(n) if is_device_name(&n.to_string_lossy()))) {
+            return Err(format!("automation path rejected: reserved device names are not allowed: {path}"));
+        }
+        let absolute = std::path::absolute(path).map_err(|e| format!("automation path rejected: cannot resolve {path}: {e}"))?;
+        #[cfg(windows)]
+        if !is_disk_path(&absolute) {
+            return Err(format!("automation path rejected: network or device path outside the roots: {path}"));
+        }
+        let target = resolve_path(&absolute)?;
         if access == Access::Read {
             let roots = [self.read.as_ref(), self.write.as_ref()];
             if roots.iter().flatten().any(|r| inside(&target, &r.resolved)) {
@@ -200,18 +214,11 @@ pub fn check_write_directory(path: &str) -> Result<(), String> {
 
 /// `path` made absolute with its links followed; for a path that doesn't exist (yet), its nearest
 /// existing folder's links followed and the rest appended.
-fn resolve(path: &str) -> Result<PathBuf, String> {
-    if path.is_empty() {
-        return Err("automation path rejected: path is empty".into());
-    }
-    // Checked as given: making `…\NUL` absolute gives the device path `\\.\NUL` on Windows.
-    if cfg!(windows) && Path::new(path).components().any(|c| matches!(c, Component::Normal(n) if is_device_name(&n.to_string_lossy()))) {
-        return Err(format!("automation path rejected: reserved device names are not allowed: {path}"));
-    }
-    let absolute = std::path::absolute(path).map_err(|e| format!("automation path rejected: cannot resolve {path}: {e}"))?;
+fn resolve(absolute: &Path) -> Result<PathBuf, String> {
+    let path = absolute.display();
     // The names below the nearest existing folder, last first.
     let mut missing: Vec<OsString> = vec![];
-    let mut at = absolute.as_path();
+    let mut at = absolute;
     loop {
         #[cfg(test)]
         tests::before_filesystem_resolution();
@@ -278,6 +285,14 @@ fn is_device_name(component: &str) -> bool {
     matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$") || numbered("COM") || numbered("LPT")
 }
 
+#[cfg(windows)]
+fn is_disk_path(path: &Path) -> bool {
+    match path.components().next() {
+        Some(Component::Prefix(p)) => matches!(p.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,6 +310,7 @@ mod tests {
         });
     }
 
+    #[cfg(windows)]
     fn without_filesystem_resolution(f: impl FnOnce()) {
         struct Restore;
         impl Drop for Restore {
@@ -383,6 +399,36 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn resolver_receives_the_checked_absolute_spelling() {
+        let (base, roots) = folders("resolver-spelling");
+        let mut paths = vec!["Cargo.toml".to_string()];
+        #[cfg(windows)]
+        paths.push(format!("//?/{}", s(base.join("in/a.dxf")).replace('\\', "/")));
+        for path in paths.drain(..) {
+            let expected = std::path::absolute(&path).unwrap();
+            assert_eq!(
+                roots.check_with(&path, Access::Read, false, |actual| {
+                    assert_eq!(Path::new(actual), expected, "resolver must use the path whose prefix was checked");
+                    Ok(std::fs::canonicalize(base.join("in/a.dxf")).unwrap())
+                }),
+                Ok(())
+            );
+        }
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalized_prefix_policy_allows_only_disks() {
+        for path in [r"C:\x", r"\\?\C:\x"] {
+            assert!(is_disk_path(Path::new(path)), "{path}");
+        }
+        for path in [r"\\host\share\x", r"\\?\UNC\host\share\x", r"\\.\C:\x", r"\\?\pipe\x", r"\x", "relative", ""] {
+            assert!(!is_disk_path(Path::new(path)), "{path}");
+        }
     }
 
     #[test]
