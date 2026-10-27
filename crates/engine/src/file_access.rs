@@ -108,9 +108,7 @@ impl AutomationRoots {
             let special = normalized.starts_with("\\\\") && !normalized.starts_with("\\\\?\\");
             let extended_network = normalized.to_ascii_lowercase().starts_with("\\\\?\\unc\\");
             if special || extended_network {
-                let candidate = if extended_network {
-                    PathBuf::from(&normalized)
-                } else if normalized.starts_with("\\\\.\\") {
+                let candidate = if extended_network || normalized.starts_with("\\\\.\\") {
                     PathBuf::from(&normalized)
                 } else {
                     PathBuf::from(format!("\\\\?\\UNC\\{}", normalized.trim_start_matches('\\')))
@@ -309,8 +307,12 @@ mod tests {
         let (base, roots) = folders("prune-directory");
         let path = base.join("outside/1234-abc.lock");
         std::fs::write(&path, "private").unwrap();
-        std::fs::File::options().write(true).open(&path).unwrap()
-            .set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::UNIX_EPOCH)).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::UNIX_EPOCH))
+            .unwrap();
         confine(Some(&roots), || crate::autosave::prune_locks(&base.join("outside")));
         assert!(path.exists());
         let _ = std::fs::remove_dir_all(base);
@@ -340,7 +342,7 @@ mod tests {
             let e = session.execute("drawingrecovery", &serde_json::json!({})).unwrap_err();
             assert!(e.to_string().contains("outside the read root"), "{e}");
         });
-        let path = base.join("in/Drawing_1234-abc_1.sv$");
+        let path = base.join("in").join("Drawing_1234-abc_1.sv$");
         std::fs::write(&path, "private").unwrap();
         crate::autosave::set_savefilepath(&s(base.join("in")));
         confine(Some(&roots), || {

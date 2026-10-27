@@ -20,6 +20,11 @@ CASES = [
 ]
 
 source = Path("crates/engine/src/file_access.rs").read_text(encoding="utf-8")
+start = source.index("        // Reject remote/device namespaces")
+resolution = "        let target = resolve_path(path)?;"
+end = source.index(resolution, start)
+block = source[start:end + len(resolution)]
+CASES.append(("network-resolution-order", "file_access.rs", block, resolution + "\n" + source[start:end], ENGINE, "network_paths_are_rejected_before_resolution"))
 for kind, test in [("read", "files_open_only_from_inside_the_read_root"), ("write", "writes_go_only_into_the_write_root_and_leave_no_temp_file_outside")]:
     match = re.search(r"pub fn check_" + kind + r"\(path: &str\) -> Result<\(\), String> \{.*?\n\}", source, re.S)
     if match is None:

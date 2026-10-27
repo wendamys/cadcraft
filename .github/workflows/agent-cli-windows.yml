@@ -9,7 +9,57 @@ permissions:
   contents: read
 
 jobs:
+  regressions:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      RUST_BACKTRACE: 1
+      CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+      CRAFT_FONTS_REQUIRED: '1'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: a034d1ebaf1cc43999ad5810793d095c09e7a838
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: 3d9ab3a132ed0eff457e424226a435a901da30d3
+          path: craft-fonts
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: agent-cli-windows-x64
+      - name: Prove new regressions fail before fixes
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $cases = @(
+            @('cadcraft-engine', '--lib', 'file_access::tests::recovery_listing_checks_the_directory'),
+            @('cadcraft-engine', '--lib', 'file_access::tests::recovery_discard_checks_each_write'),
+            @('cadcraft-engine', '--lib', 'file_access::tests::recovery_prune_checks_each_write'),
+            @('cadcraft-engine', '--lib', 'file_access::tests::atomic_temporary_stays_inside_the_write_root'),
+            @('cadcraft-engine', '--lib', 'file_access::tests::network_paths_are_rejected_before_resolution'),
+            @('cadcraft-cli', '--test', 'mcp_roots', 'savefilepath_outside_the_write_root_is_refused'),
+            @('cadcraft-cli', '--test', 'mcp_roots', 'xattach_rejects_existing_and_missing_outside_candidates_equally')
+          )
+          foreach ($case in $cases) {
+            $package, $rest = $case
+            cargo test --locked -p $package @rest 2>&1 | Tee-Object red-test.txt
+            if ($LASTEXITCODE -eq 0) { throw "Regression unexpectedly passed: $case" }
+            if (-not (Select-String -Path red-test.txt -SimpleMatch -Pattern 'test result: FAILED.')) { throw "Test did not run: $case" }
+          }
+          exit 0
+
   cli:
+    needs: regressions
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -36,6 +86,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: agent-cli-windows-x64
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
       - name: Test PR integration and unit tests only
         run: |
           cargo test --locked -p cadcraft-cli --test mcp_roots
@@ -50,8 +102,6 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Check focused root bypass mutations
         run: python .github/scripts/check_root_mutations.py
-      - name: Check Rust formatting
-        run: cargo fmt --all -- --check
       - name: Build CLI for Windows x64
         run: |
           cargo build --locked --release -p cadcraft-cli --target x86_64-pc-windows-msvc
