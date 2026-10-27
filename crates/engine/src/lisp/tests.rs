@@ -31,6 +31,29 @@ fn ok(s: &mut Session, code: &str) -> String {
 }
 
 #[test]
+fn confined_lisp_file_functions_check_paths_at_use() {
+    let base = std::env::temp_dir().join(format!("cc-lisp-file-boundaries-{}", std::process::id()));
+    let inside = base.join("inside");
+    std::fs::create_dir_all(&inside).unwrap();
+    let path = base.join("outside.lsp");
+    std::fs::write(&path, "42").unwrap();
+    let literal = serde_json::to_string(&path.to_string_lossy()).unwrap();
+    let roots = crate::file_access::AutomationRoots::new(Some(&inside), Some(&inside)).unwrap().unwrap();
+    let mut s = session();
+    crate::file_access::confine(Some(&roots), || {
+        for call in ["(findfile p)", "(open p \"r\")", "(open p \"w\")", "(open p \"a\")", "(load p nil)"] {
+            assert_eq!(ok(&mut s, &format!("(progn (setq p (strcat {literal} \"\")) {call})")), "nil", "{call}");
+        }
+    });
+    // A handle opened without roots must still be checked when close writes its contents.
+    ok(&mut s, &format!("(setq f (open {literal} \"w\"))"));
+    ok(&mut s, "(write-line \"changed\" f)");
+    crate::file_access::confine(Some(&roots), || assert_eq!(ok(&mut s, "(close f)"), "nil"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "42");
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
 fn real_print_subnormal_and_rounding() {
     let mut s = session();
     assert_eq!(ok(&mut s, "1e-310"), "1.0e-310");

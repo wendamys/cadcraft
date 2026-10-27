@@ -213,6 +213,8 @@ fn resolve(path: &str) -> Result<PathBuf, String> {
     let mut missing: Vec<OsString> = vec![];
     let mut at = absolute.as_path();
     loop {
+        #[cfg(test)]
+        tests::before_filesystem_resolution();
         match std::fs::canonicalize(at) {
             Ok(mut found) => {
                 found.extend(missing.iter().rev());
@@ -279,6 +281,103 @@ fn is_device_name(component: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        static RESOLUTION_CALLS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn before_filesystem_resolution() {
+        RESOLUTION_CALLS.with(|calls| {
+            if let Some(n) = calls.get() {
+                calls.set(Some(n + 1));
+                panic!("rejected path reached filesystem resolution");
+            }
+        });
+    }
+
+    fn without_filesystem_resolution(f: impl FnOnce()) {
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                RESOLUTION_CALLS.with(|c| c.set(None));
+            }
+        }
+        RESOLUTION_CALLS.with(|c| c.set(Some(0)));
+        let _restore = Restore;
+        f();
+        RESOLUTION_CALLS.with(|c| assert_eq!(c.get(), Some(0)));
+    }
+
+    #[cfg(windows)]
+    fn slash_device_paths() -> Vec<String> {
+        ["//?/", r"\\?/", r"/\?\", r"\/?/"].into_iter().map(|prefix| format!("{prefix}C:/../UNC/cc-roots-test.invalid/share/x.dxf")).collect()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalized_namespaces_are_rejected_before_resolution() {
+        let (base, roots) = folders("normalized");
+        for path in slash_device_paths() {
+            for access in [Access::Read, Access::Write] {
+                let e = roots.check_with(&path, access, false, |_| panic!("normalization must precede filesystem resolution")).unwrap_err();
+                assert!(e.contains("network or device path outside the roots"), "{path}: {e}");
+            }
+        }
+        // Explicit UNC roots must not turn a non-disk normalized result into an allowed path.
+        // Construct the authority without opening a network root.
+        let remote = PathBuf::from(r"\\?\UNC\cc-roots-test.invalid\share");
+        let roots = AutomationRoots {
+            read: Some(Root { shown: remote.clone(), resolved: remote.clone() }),
+            write: Some(Root { shown: remote.clone(), resolved: remote }),
+        };
+        for path in [r"\\cc-roots-test.invalid\share\x.dxf", r"\\?\UNC\cc-roots-test.invalid\share\x.dxf"] {
+            for access in [Access::Read, Access::Write] {
+                let e = roots.check_with(path, access, false, |_| panic!("non-disk result reached filesystem resolution")).unwrap_err();
+                assert!(e.contains("network or device path outside the roots"), "{e}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn slash_namespaces_are_blocked_at_file_boundaries() {
+        let (base, roots) = folders("normalized-boundaries");
+        crate::cmd::file::set_io(crate::cmd::file::IoHooks { read: cadcraft_io::read, write: cadcraft_io::write, plot: None });
+        confine(Some(&roots), || without_filesystem_resolution(|| {
+            let mut session = crate::Session::new();
+            for path in slash_device_paths() {
+                for command in ["open", "saveas", "export", "recover", "xattach"] {
+                    let e = session.execute(command, &serde_json::json!({"path": path})).unwrap_err().to_string();
+                    assert!(e.contains("automation path rejected"), "{command}: {e}");
+                }
+                // The filesystem path is built inside the interpreter, not visible to an outer parameter filter.
+                let literal = serde_json::to_string(&path).unwrap();
+                for call in ["(findfile p)", "(open p \"r\")", "(open p \"w\")", "(open p \"a\")", "(load p nil)"] {
+                    let code = format!("(progn (setq p (strcat {literal} \"\")) {call})");
+                    let value = session.lisp_eval(&code, false, true, vec![]).unwrap().unwrap().unwrap();
+                    assert!(matches!(value, crate::lisp::value::Value::Nil), "{code}");
+                }
+            }
+        }));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalized_disk_paths_inside_roots_are_accepted() {
+        let (base, roots) = folders("normalized-positive");
+        for (folder, access) in [("in", Access::Read), ("out", Access::Write)] {
+            let dir = base.join(folder).join("Кириллица и пробелы").join("long".repeat(40)).join("deep".repeat(30));
+            std::fs::create_dir_all(std::fs::canonicalize(base.join(folder)).unwrap().join(dir.strip_prefix(base.join(folder)).unwrap())).unwrap();
+            let ordinary = s(dir.join("x.dxf"));
+            assert!(ordinary.len() > 260);
+            for path in [ordinary.clone(), format!(r"\\?\{ordinary}"), format!("//?/{}", ordinary.replace('\\', "/"))] {
+                assert_eq!(roots.check(&path, access), Ok(()), "{path}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(base);
+    }
 
     #[test]
     fn recovery_listing_checks_the_directory() {

@@ -1,15 +1,17 @@
-"""Prove the new regressions fail against b4fbd85 production code before green tests."""
+"""Prove structural namespace regressions fail on eac0b41 before green tests."""
 from pathlib import Path
 import subprocess
 
 cases = [
-    ("file_access.rs", "extended_devices_are_rejected_before_resolution"),
-    ("cmd/blocks/xref/load.rs", "confined_xrefs_fall_back_beside_host_and_hide_missing_candidates"),
+    ("file_access.rs", "normalized_namespaces_are_rejected_before_resolution"),
+    ("file_access.rs", "slash_namespaces_are_blocked_at_file_boundaries"),
 ]
 for source, test in cases:
     path = Path("crates/engine/src") / source
     original = path.read_text(encoding="utf-8")
-    old = subprocess.check_output(["git", "show", f"b4fbd85:{path.as_posix()}"], text=True, encoding="utf-8")
+    old = subprocess.check_output(["git", "show", f"eac0b41:{path.as_posix()}"], text=True, encoding="utf-8")
+    # Keep the test-only observer at the first filesystem call in the old resolver too.
+    old = old.replace("        match std::fs::canonicalize(at) {", "        #[cfg(test)]\n        tests::before_filesystem_resolution();\n        match std::fs::canonicalize(at) {")
     marker = "#[cfg(test)]\nmod tests {"
     try:
         path.write_text(old.split(marker)[0] + marker + original.split(marker)[1], encoding="utf-8")
@@ -19,4 +21,4 @@ for source, test in cases:
             raise RuntimeError(f"Expected assertion failure on old production code: {test}")
     finally:
         path.write_text(original, encoding="utf-8")
-print("Proved 2/2 new regressions fail on b4fbd85", flush=True)
+print("Proved 2/2 new regressions fail on eac0b41", flush=True)
