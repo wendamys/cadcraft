@@ -344,22 +344,24 @@ mod tests {
     fn slash_namespaces_are_blocked_at_file_boundaries() {
         let (base, roots) = folders("normalized-boundaries");
         crate::cmd::file::set_io(crate::cmd::file::IoHooks { read: cadcraft_io::read, write: cadcraft_io::write, plot: None });
-        confine(Some(&roots), || without_filesystem_resolution(|| {
-            let mut session = crate::Session::new();
-            for path in slash_device_paths() {
-                for command in ["open", "saveas", "export", "recover", "xattach"] {
-                    let e = session.execute(command, &serde_json::json!({"path": path})).unwrap_err().to_string();
-                    assert!(e.contains("automation path rejected"), "{command}: {e}");
+        confine(Some(&roots), || {
+            without_filesystem_resolution(|| {
+                let mut session = crate::Session::new();
+                for path in slash_device_paths() {
+                    for command in ["open", "saveas", "export", "recover", "xattach"] {
+                        let e = session.execute(command, &serde_json::json!({"path": path})).unwrap_err().to_string();
+                        assert!(e.contains("automation path rejected"), "{command}: {e}");
+                    }
+                    // The filesystem path is built inside the interpreter, not visible to an outer parameter filter.
+                    let literal = serde_json::to_string(&path).unwrap();
+                    for call in ["(findfile p)", "(open p \"r\")", "(open p \"w\")", "(open p \"a\")", "(load p nil)"] {
+                        let code = format!("(progn (setq p (strcat {literal} \"\")) {call})");
+                        let value = session.lisp_eval(&code, false, true, vec![]).unwrap().unwrap().unwrap();
+                        assert!(matches!(value, crate::lisp::value::Value::Nil), "{code}");
+                    }
                 }
-                // The filesystem path is built inside the interpreter, not visible to an outer parameter filter.
-                let literal = serde_json::to_string(&path).unwrap();
-                for call in ["(findfile p)", "(open p \"r\")", "(open p \"w\")", "(open p \"a\")", "(load p nil)"] {
-                    let code = format!("(progn (setq p (strcat {literal} \"\")) {call})");
-                    let value = session.lisp_eval(&code, false, true, vec![]).unwrap().unwrap().unwrap();
-                    assert!(matches!(value, crate::lisp::value::Value::Nil), "{code}");
-                }
-            }
-        }));
+            })
+        });
         let _ = std::fs::remove_dir_all(base);
     }
 
