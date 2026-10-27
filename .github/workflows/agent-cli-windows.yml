@@ -38,6 +38,7 @@ jobs:
           key: agent-cli-windows-x64
       - name: Prove new regressions fail before fixes
         run: |
+          $PSNativeCommandUseErrorActionPreference = $false
           $cases = @(
             @('cadcraft-engine', '--lib', 'file_access::tests::recovery_listing_checks_the_directory'),
             @('cadcraft-engine', '--lib', 'file_access::tests::recovery_discard_checks_each_write'),
